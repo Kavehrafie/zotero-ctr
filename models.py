@@ -11,6 +11,7 @@ class Creator(BaseModel):
 class Item(BaseModel):
     key: str
     title: str
+    item_type: str = ""
     year: int | None = None
     doi: str | None = None
     creator: Creator = Creator()
