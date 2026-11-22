@@ -1,15 +1,15 @@
 import re
 from collections import defaultdict
-
 from difflib import SequenceMatcher
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from fetch import load_library
+from config import CONFIG_PATH, load_config, save_config
+from execute import trash_and_free
+from fetch import load_library, zotero_client
 from models import Attachment, Creator, Item
-
 
 FUZZY_THRESHOLD = 0.85
 
@@ -99,18 +99,14 @@ ITEMS = [
         key="M4",
         title="Desert Solitaire",
         year=1968,
-        creator=Creator(first="Edward", last="Abbey")
+        creator=Creator(first="Edward", last="Abbey"),
     ),
     Item(
         key="N2",
         title="Desert Solitaire",
-        creator=Creator(first="Edward", last="Abbey")
+        creator=Creator(first="Edward", last="Abbey"),
     ),
-    Item(
-        key="K8",
-        title="",
-        creator=Creator(first="Anon", last="Ymous")
-    ),
+    Item(key="K8", title="", creator=Creator(first="Anon", last="Ymous")),
     Item(
         key="P3",
         title="Dye Gardens of Oaxaka",
@@ -165,7 +161,7 @@ def fuzzy_merged(groups):
         return k
 
     for i, k1 in enumerate(candidates):
-        for k2 in candidates[i + 1:]:
+        for k2 in candidates[i + 1 :]:
             if k1[2] != k2[2]:
                 continue
             sm = SequenceMatcher(a=k1[1], b=k2[1])
@@ -185,8 +181,10 @@ def fuzzy_merged(groups):
 
     return out
 
+
 def dups_only(groups):
-    return {k: v for k, v in groups.items()  if len(v) > 1}
+    return {k: v for k, v in groups.items() if len(v) > 1}
+
 
 def wildcard_merged(groups):
     per_title = defaultdict(dict)
@@ -201,9 +199,8 @@ def wildcard_merged(groups):
             out[("title", title)] = [m for ms in years.values() for m in ms]
         else:
             for year, members in years.items():
-                out[("title+year", title, year)] = members 
+                out[("title+year", title, year)] = members
     return out
-
 
 
 def find_groups(entries, key_of):
@@ -214,20 +211,19 @@ def find_groups(entries, key_of):
     return dups_only(fuzzy_merged(wildcard_merged(groups)))
 
 
-
 def pick_master(members):
     return min(members, key=lambda e: e.key)
 
 
 def show(title: str, members, master, columns) -> Table:
     table = Table(title=title)
-    table.add_column("")  # key + marker
+    table.add_column("#")  # key + marker
     for header, _ in columns:
         table.add_column(header)
-    for entry in members:
+    for n, entry in enumerate(members, 1):
         marker = "⏺ " if entry is master else "  "
         cells = [cell(entry) for _, cell in columns]
-        table.add_row(f"{marker}{entry.key}", *cells)
+        table.add_row(f"{n} {marker}{entry.key}", *cells)
     return table
 
 
@@ -235,14 +231,16 @@ SOURCES = {
     "entries": (
         entry_key,
         ENTRY_COLUMNS,
-        "[m]erge [d]elete dups [s]kip [a]ll skip [q]uit",
+        "[m]erge [d]elete dups [1-9] keep [s]kip [a]ll skip [q]uit",
         lambda lib: lib[0],
+        False,
     ),
     "attachments": (
         attachment_key,
         ATTACHMENT_COLUMNS,
-        "[d]elete dups [s]kip [a]ll skip [q]uit",
+        "[d]elete dups [1-9] keep [s]kip [a]ll skip [q]uit",
         lambda lib: lib[1],
+        True,
     ),
 }
 
@@ -256,40 +254,54 @@ def review(
     refresh: bool = typer.Option(
         False, "--refresh", help="re-fetch from Zotero, ignoring the cache"
     ),
+    execute: bool = typer.Option(
+        False, "--execute", help="apply attachment deletions; otherwise dry run"
+    ),
 ):
-    """Interactively review duplicate groups (dry run – nothing is changed)"""
+    """Interactively review duplicate groups (dry run unless --execute)"""
     library = (ITEMS, ATTACHMENTS) if fake else load_library(refresh)
-    key_of, columns, options, pick = SOURCES[what]
+    key_of, columns, options, pick, can_delete = SOURCES[what]
     entries = pick(library)
+
+    client, cfg = None, None
+    if execute and can_delete:
+        cfg = load_config()
+        client = zotero_client(cfg.local_api_key)
+        if not cfg.local_api_key:
+            granted = client.authorize_local("zotero-ctr")
+            cfg = cfg.model_copy(update={"local_api_key": granted["key"]})
+            save_config(CONFIG_PATH, cfg)
 
     planned = []
     groups = find_groups(entries, key_of)
     for i, (key, members) in enumerate(groups.items(), 1):
         master = pick_master(members)
-        console.print(
-            show(
-                f"Group {i}/{len(groups)} matched by {key[0]}: {key[1]}",
-                members,
-                master,
-                columns,
-            )
-        )
+        header = f"Group {i}/{len(groups)} matched by {key[0]}: {key[1]}"
+        console.print(show(header, members, master, columns))
         choice = typer.prompt(options, default="s").lower()
-        others = [e.key for e in members if e is not master]
+        if choice.isdigit() and 1 <= int(choice) <= len(members):
+            master = members[int(choice) - 1]
+            console.print(show(header, members, master, columns))
+            choice = typer.prompt(options, default="s").lower()
+        others = [e for e in members if e is not master]
         if choice == "m":
-            planned.append(f"merge {', '.join(others)} into {master.key}")
+            planned.append(
+                f"merge {', '.join(e.key for e in others)} into {master.key}"
+            )
         elif choice == "d":
-            planned.append(f"delete {', '.join(others)} (keep {master.key})")
-        elif choice == "a":
+            if client and cfg:
+                for att in others:
+                    console.print(f"  {trash_and_free(cfg, client, att)}")
+            else:
+                planned.append(
+                    f"delete {', '.join(e.key for e in others)} (keep {master.key})"
+                )
+        elif choice in ("a", "q"):
             break
-        elif choice == "q":
-            break
-    console.print(
-        f"\n[bold]DRY RUN[/bold] – nothing changed. {len(planned)} planned action(s):"
-    )
+    mode = "EXECUTED" if client else "DRY RUN"
+    console.print(f"\n[bold]{mode}[/bold] – {len(planned)} planned action(s):")
     for action in planned:
         console.print(f"  → {action}")
-
 
 
 if __name__ == "__main__":

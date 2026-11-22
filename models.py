@@ -25,6 +25,7 @@ class Item(BaseModel):
 
 class Attachment(BaseModel):
     key: str
+    version: int = 0
     filename: str = ""
     md5: str = ""
     parent_key: str = ""

@@ -25,9 +25,14 @@ def to_item(d) -> Item:
     )
 
 
+def zotero_client(local_api_key: str = ""):
+    return zotero.Zotero("0", "user", local=True, local_api_key=local_api_key)
+
+
 def to_attachment(d) -> Attachment:
     return Attachment(
         key=d["key"],
+        version=d.get("version", 0),
         filename=d.get("filename") or "",
         md5=d["md5"],
         parent_key=d.get("parentItem") or "",
@@ -35,7 +40,7 @@ def to_attachment(d) -> Attachment:
 
 
 def fetch_library() -> tuple[list[Item], list[Attachment]]:
-    z = zotero.Zotero("0", "user", local=True)
+    z = zotero_client()
     entries = [raw["data"] for raw in z.everything(z.items())]
     items = [to_item(d) for d in entries if d["itemType"] not in ("attachment", "note")]
     attachments = [
