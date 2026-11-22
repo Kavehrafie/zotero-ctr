@@ -12,6 +12,7 @@ from execute import trash_and_free
 from fetch import load_library, zotero_client
 from merge import merge_group
 from models import Attachment, Creator, Item
+from preview import first_pdf, open_pdf, thumbnail
 
 FUZZY_THRESHOLD = 0.85
 
@@ -233,7 +234,7 @@ SOURCES = {
     "entries": (
         entry_key,
         ENTRY_COLUMNS,
-        "[m]erge [d]elete dups [1-9] keep [s]kip [a]ll skip [q]uit",
+        "[m]erge [d]elete dups [1-9] keep [p]df [o]pen [s]kip [a]ll skip [q]uit",
         lambda lib: lib[0],
     ),
     "attachments": (
@@ -317,6 +318,21 @@ def review(
                 planned.append(
                     f"merge {', '.join(e.key for e in others)} into {master.key}"
                 )
+        elif choice == "p":
+            cfg = cfg or load_config()
+            for member in members:
+                path = first_pdf(cfg, library[1], member.key)
+                console.print(f"  {member.key}: {path or 'no PDF'}")
+                if path:
+                    thumbnail(path)
+        elif choice == "o":
+            cfg = cfg or load_config()
+            path = first_pdf(cfg, library[1], master.key)
+            if path:
+                open_pdf(path)
+                console.print(f"  opened {path}")
+            else:
+                console.print(f"  {master.key}: no PDF")
         elif choice == "d":
             if client and cfg:
                 for att in others:
