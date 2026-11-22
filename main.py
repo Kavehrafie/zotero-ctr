@@ -159,9 +159,12 @@ def review(
     fake: bool = typer.Option(
         False, "--fake", help="use mockup data instead of Zotero"
     ),
+    refresh: bool = typer.Option(
+        False, "--refresh", help="re-fetch from Zotero, ignoring the cache"
+    ),
 ):
     """Interactively review duplicate groups (dry run – nothing is changed)"""
-    library = (ITEMS, ATTACHMENTS) if fake else load_library()
+    library = (ITEMS, ATTACHMENTS) if fake else load_library(refresh)
     key_of, columns, options, pick = SOURCES[what]
     entries = pick(library)
 
