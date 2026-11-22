@@ -1,0 +1,10 @@
+[project]
+name = "zotero-ctr"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.14.4",
+    "pyzotero>=1.17.0",
+    "rich>=15.0.0",
+    "typer>=0.29.2",
+]
