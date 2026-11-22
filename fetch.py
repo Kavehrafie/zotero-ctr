@@ -14,6 +14,7 @@ def to_item(d) -> Item:
     first = next(iter(d.get("creators") or [{}]))
     return Item(
         key=d["key"],
+        version=d.get("version", 0),
         title=d.get("title") or "",
         item_type=d.get("itemType") or "",
         year=d.get("date"),

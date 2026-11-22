@@ -3,12 +3,14 @@ from collections import defaultdict
 from difflib import SequenceMatcher
 
 import typer
+from pyzotero.errors import LocalAPIKeyRequiredError
 from rich.console import Console
 from rich.table import Table
 
 from config import CONFIG_PATH, load_config, save_config
 from execute import trash_and_free
 from fetch import load_library, zotero_client
+from merge import merge_group
 from models import Attachment, Creator, Item
 
 FUZZY_THRESHOLD = 0.85
@@ -233,16 +235,24 @@ SOURCES = {
         ENTRY_COLUMNS,
         "[m]erge [d]elete dups [1-9] keep [s]kip [a]ll skip [q]uit",
         lambda lib: lib[0],
-        False,
     ),
     "attachments": (
         attachment_key,
         ATTACHMENT_COLUMNS,
         "[d]elete dups [1-9] keep [s]kip [a]ll skip [q]uit",
         lambda lib: lib[1],
-        True,
     ),
 }
+
+
+def grant(client, cfg):
+    granted = client.authorize_local("zotero-ctr")
+    if not granted["remember"]:
+        console.print(
+            "[yellow]Zotero granted a ONE-TIME key — click 'Always Allow' "
+            "in the dialog to stop re-authorizing on every write[/yellow]"
+        )
+    return cfg.model_copy(update={"local_api_key": granted["key"]})
 
 
 @app.command()
@@ -260,17 +270,28 @@ def review(
 ):
     """Interactively review duplicate groups (dry run unless --execute)"""
     library = (ITEMS, ATTACHMENTS) if fake else load_library(refresh)
-    key_of, columns, options, pick, can_delete = SOURCES[what]
+    key_of, columns, options, pick = SOURCES[what]
     entries = pick(library)
 
     client, cfg = None, None
-    if execute and can_delete:
+    if execute:
         cfg = load_config()
         client = zotero_client(cfg.local_api_key)
         if not cfg.local_api_key:
-            granted = client.authorize_local("zotero-ctr")
-            cfg = cfg.model_copy(update={"local_api_key": granted["key"]})
+            cfg = grant(client, cfg)
             save_config(CONFIG_PATH, cfg)
+
+    def write(action):
+        """Run one write; on an expired key, re-authorize once and retry."""
+        nonlocal cfg
+        if client is None or cfg is None:
+            raise RuntimeError("write() needs the --execute handshake to have run")
+        try:
+            return action()
+        except LocalAPIKeyRequiredError:
+            cfg = grant(client, cfg)
+            save_config(CONFIG_PATH, cfg)
+            return action()
 
     planned = []
     groups = find_groups(entries, key_of)
@@ -285,13 +306,24 @@ def review(
             choice = typer.prompt(options, default="s").lower()
         others = [e for e in members if e is not master]
         if choice == "m":
-            planned.append(
-                f"merge {', '.join(e.key for e in others)} into {master.key}"
-            )
+            if client:
+                result = write(
+                    lambda master=master, others=others: merge_group(
+                        client, master, others, library[1]
+                    )
+                )
+                console.print(f"  {result}")
+            else:
+                planned.append(
+                    f"merge {', '.join(e.key for e in others)} into {master.key}"
+                )
         elif choice == "d":
             if client and cfg:
                 for att in others:
-                    console.print(f"  {trash_and_free(cfg, client, att)}")
+                    result = write(
+                        lambda cfg=cfg, att=att: trash_and_free(cfg, client, att)
+                    )
+                    console.print(f"  {result}")
             else:
                 planned.append(
                     f"delete {', '.join(e.key for e in others)} (keep {master.key})"
