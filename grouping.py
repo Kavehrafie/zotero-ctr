@@ -39,6 +39,9 @@ def fuzzy_merged(groups):
         for k2 in candidates[i + 1 :]:
             if k1[2] != k2[2]:
                 continue
+            lo, hi = sorted((len(k1[1]), len(k2[1])))
+            if 2 * lo / (lo + hi) <= FUZZY_THRESHOLD:
+                continue
             sm = SequenceMatcher(a=k1[1], b=k2[1])
             if sm.quick_ratio() >= FUZZY_THRESHOLD and sm.ratio() >= FUZZY_THRESHOLD:
                 parent[find(k2)] = find(k1)

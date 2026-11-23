@@ -5,6 +5,7 @@ from pathlib import Path
 from pyzotero import zotero
 
 from models import Attachment, Creator, Item
+from remote import attachment_uploaded
 
 CACHE_FILE = Path(".zotero-cache.json")
 CACHE_TTL_SECONDS = 3600
@@ -46,15 +47,21 @@ def to_attachment(d) -> Attachment:
     )
 
 
+PAGE_ITEMS = 500
+
+
 def fetch_library() -> tuple[list[Item], list[Attachment]]:
     z = zotero_client()
-    entries = [raw["data"] for raw in z.everything(z.items())]
-    items = [to_item(d) for d in entries if d["itemType"] not in ("attachment", "note")]
-    attachments = [
-        to_attachment(d)
-        for d in entries
-        if d["itemType"] == "attachment" and d.get("md5")
+    entries = [
+        raw["data"]
+        for raw in z.everything(z.items(limit=PAGE_ITEMS, itemType="-attachment"))
     ]
+    atts = [
+        raw["data"]
+        for raw in z.everything(z.items(limit=PAGE_ITEMS, itemType="attachment"))
+    ]
+    items = [to_item(d) for d in entries if d["itemType"] != "note"]
+    attachments = [to_attachment(d) for d in atts if d.get("md5")]
     return items, attachments
 
 
