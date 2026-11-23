@@ -1,14 +1,16 @@
 import typer
 from pyzotero.errors import LocalAPIKeyRequiredError
 
+from grouping import find_groups
+from normalize import clean_title, split_creators
 from config import CONFIG_PATH, load_config, save_config
 from execute import free_local, trash_and_free
 from fetch import load_library, zotero_client
 from fixtures import ATTACHMENTS, ITEMS
-from grouping import find_groups, pick_master
 from merge import merge_group
 from preview import first_pdf, open_pdf, thumbnail
-from ui import SOURCES, choose, console, paint, show
+from ui import SOURCES, browse, choose, console, decide, paint, proposal_table
+
 
 app = typer.Typer()
 
@@ -22,6 +24,25 @@ def grant(client, cfg):
         )
     return cfg.model_copy(update={"local_api_key": granted["key"]})
 
+def open_write_session(execute: bool):
+    if not execute:
+        return None, None, None
+    cfg = load_config()
+    client = zotero_client(cfg.local_api_key)
+    if not cfg.local_api_key:
+        cfg = grant(client, cfg)
+        save_config(CONFIG_PATH, cfg)
+
+    def write(action):
+        nonlocal cfg
+        try:
+            return action()
+        except LocalAPIKeyRequiredError:
+            cfg = grant(client, cfg)
+            save_config(CONFIG_PATH, cfg)
+            return action()
+
+    return client, cfg, write
 
 @app.command()
 def review(
@@ -36,83 +57,55 @@ def review(
         False, "--execute", help="apply attachment deletions; otherwise dry run"
     ),
 ):
-    """Interactively review duplicate groups (dry run unless --execute)"""
+    """Interactively review duplicate groups page by page (dry run unless --execute)"""
     library = (ITEMS, ATTACHMENTS) if fake else load_library(refresh)
     key_of, columns, options, pick = SOURCES[what]
     entries = pick(library)
-
-    client, cfg = None, None
-    if execute:
-        cfg = load_config()
-        client = zotero_client(cfg.local_api_key)
-        if not cfg.local_api_key:
-            cfg = grant(client, cfg)
-            save_config(CONFIG_PATH, cfg)
-
-    def write(action):
-        """Run one write; on an expired key, re-authorize once and retry."""
-        nonlocal cfg
-        if client is None or cfg is None:
-            raise RuntimeError("write() needs the --execute handshake to have run")
-        try:
-            return action()
-        except LocalAPIKeyRequiredError:
-            cfg = grant(client, cfg)
-            save_config(CONFIG_PATH, cfg)
-            return action()
+    cfg = load_config()
+    client, _, write = open_write_session(execute)
 
     planned = []
-    groups = find_groups(entries, key_of)
-    for i, (key, members) in enumerate(groups.items(), 1):
-        master = pick_master(members)
-        header = f"Group {i}/{len(groups)} matched by {key[0]}: {key[1]}"
-        paint(show(header, members, master, columns))
-        choice = typer.prompt(options, default="s").lower()
-        if choice.isdigit() and 1 <= int(choice) <= len(members):
-            master = members[int(choice) - 1]
-            paint(show(header, members, master, columns))
-            choice = typer.prompt(options, default="s").lower()
+    items = list(find_groups(entries, key_of).items())
+
+    def resolve(i) -> str:
+        """Decide one group and act on it: done / skip / quit."""
+        key, members = items[i]
+        choice, master = decide(columns, options, key, members)
         others = [e for e in members if e is not master]
         if choice == "m":
-            if client:
-                result = write(
-                    lambda master=master, others=others: merge_group(
-                        client, master, others, library[1]
-                    )
+            if client and write:
+                console.print(
+                    f"  {write(lambda: merge_group(client, master, others, library[1]))}"
                 )
-                console.print(f"  {result}")
             else:
                 planned.append(
                     f"merge {', '.join(e.key for e in others)} into {master.key}"
                 )
+        elif choice == "d":
+            if client and write:
+                for att in others:
+                    console.print(f"  {write(lambda: trash_and_free(cfg, client, att))}")
+            else:
+                planned.append(
+                    f"delete {', '.join(e.key for e in others)} (keep {master.key})"
+                )
         elif choice == "p":
-            cfg = cfg or load_config()
             for member in members:
                 path = first_pdf(cfg, library[1], member.key)
                 console.print(f"  {member.key}: {path or 'no PDF'}")
                 if path:
                     thumbnail(path)
         elif choice == "o":
-            cfg = cfg or load_config()
             path = first_pdf(cfg, library[1], master.key)
             if path:
                 open_pdf(path)
-                console.print(f"  opened {path}")
-            else:
-                console.print(f"  {master.key}: no PDF")
-        elif choice == "d":
-            if client and cfg:
-                for att in others:
-                    result = write(
-                        lambda cfg=cfg, att=att: trash_and_free(cfg, client, att)
-                    )
-                    console.print(f"  {result}")
-            else:
-                planned.append(
-                    f"delete {', '.join(e.key for e in others)} (keep {master.key})"
-                )
-        elif choice in ("a", "q"):
-            break
+            console.print(f"  opened {path}" if path else f"  {master.key}: no PDF")
+        if choice in ("a", "q"):
+            return "quit"
+        return "done" if choice in ("m", "d") else "skip"
+
+    if items:
+        browse(items, resolve)
     mode = "EXECUTED" if client else "DRY RUN"
     console.print(f"\n[bold]{mode}[/bold] – {len(planned)} planned action(s):")
     for action in planned:
@@ -168,6 +161,47 @@ def free(
     label = "freed" if execute else "would free"
     console.print(f"\n[bold]{label}: {freed / 1e6:.1f} MB[/bold]")
 
+@app.command()
+def clean(
+    what: str = typer.Option("title", "--what", help="title or names"),
+    execute: bool = typer.Option(False, "--execute", help="write fixes to Zotero"),
+):
+    """Clean up titles or creator names in Zotero (dry run unless --execute)"""
+    items, _ = load_library() 
+    client, cfg, write = open_write_session(execute)
+
+    if what == "title":
+        proposals =[
+            (it, {"title": clean_title(it.title)}) for it in items if clean_title(it.title) != it.title
+        ]
+    else:
+        proposals = [(it, None) for it in items if any(", " in c for c in it.creators)]
+
+    planned, written = [], 0
+    for i, (it, ch) in enumerate(proposals, 1):
+        paint(proposal_table(i, len(proposals), it, ch))
+        if typer.prompt("[y] fix [n] skip [q] quit", default="y").lower() != "y":
+            continue
+        if client and write:
+            if what == "title":
+                write(
+                    lambda it=it, ch=ch: client.update_item(
+                        {"key": it.key, "version": it.version}, ch
+                    )
+                )
+            else:
+                live = client.item(it.key)["data"]["creators"]
+                write(
+                    lambda it=it, f=split_creators(live): client.update_item(
+                        {"key": it.key, "version": it.version}, {"creators": f}
+                    )
+                )
+            written += 1
+        else:
+            planned.append(f"{it.key}: {ch or 'split creators'}")
+    mode = "EXECUTED" if client else "DRY RUN"
+    console.print(f"\n[bold]{mode}[/bold] – {written} written, {len(planned)} planned action(s)")
+            
 
 if __name__ == "__main__":
     app()

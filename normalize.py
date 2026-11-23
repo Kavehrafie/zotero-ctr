@@ -26,21 +26,18 @@ def strip_tags(title: str) -> str:
 
 
 def fix_case(title: str) -> str:
-    words = title.split()
     letters = [c for c in title if c.isalpha()]
     if (
-        not words
+        not letters
         or len(title) <= 6
         or sum(c.isupper() for c in letters) / len(letters) <= 0.7
     ):
         return title
-    return " ".join(
-        w.lower()
-        if i and i != len(words) - 1 and w.lower().strip(":,") in STOP
-        else w.capitalize()
-        for i, w in enumerate(words)
-    )
-
+    out, cap_next = [], True
+    for w in title.split():
+        out.append(w.capitalize() if cap_next else w.lower())
+        cap_next = w.endswith(":")
+    return " ".join(out)
 
 def tidy(title: str) -> str:
     return re.sub(r"\s+", " ", title).strip()
@@ -48,3 +45,14 @@ def tidy(title: str) -> str:
 
 def clean_title(title: str) -> str:
     return tidy(fix_case(strip_tags(title)))
+
+def split_creators(creators: list[dict]) -> list[str]:
+    out = []
+    for c in creators:
+        name = c.get("name") or ""
+        if ", " in name:
+            last, _, first = name.partition(", ")
+            c = {k: v for k, v in c.items() if k != "name"}
+            c["firstName"], c["lastName"] = first, last
+        out.append(c)
+    return out

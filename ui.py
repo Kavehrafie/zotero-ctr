@@ -3,7 +3,7 @@ from rich.console import Console
 from rich.table import Table
 
 from execute import dir_size
-from grouping import attachment_key, entry_key
+from grouping import attachment_key, entry_key, pick_master
 
 console = Console()
 
@@ -106,12 +106,88 @@ def choose(cfg, children, matches) -> list:
             raise typer.Exit()
         else:
             try:
-                for token in choice.split(","):
-                    lo, _, hi = token.partition("-")
-                    first, last = int(lo), int(hi or lo)
-                    if not 1 <= first <= last <= len(rows):
-                        raise IndexError
-                    for r in range(first - 1, last):
-                        selected.symmetric_difference_update({rows[r].key})
+                for r in indices(choice, len(rows)):
+                    selected.symmetric_difference_update({rows[r].key})
             except (ValueError, IndexError):
                 console.print("[red]?[/red]")
+
+def proposal_table(i: int, total: int, it, changes) -> Table:
+    table = Table(title=f"fix {i}/{total} - {it.key}")
+    table.add_column("field")
+    table.add_column("now")
+    table.add_column("proposed")
+    if changes and "title" in changes:
+        table.add_row("title", it.title[:45], changes["title"][:45])
+    else:
+        for c in it.creators:
+            if ", " in c:
+                last, _, first = c.partition(", ")
+                table.add_row("creator", c, f"{first} {last}")
+    return table
+
+def indices(choice: str, n: int) -> list[int]:
+    """Parse page numbers like 1,3-5 into zero-base indices."""
+    out = []
+    for  token in choice.split(","):
+        lo, _, hi = token.partition("-")
+        first, last = int(lo), int(hi or lo)
+        if not 1 <= first <= last <= n:
+            raise IndexError
+        out.extend(range(first - 1, last))
+    return out
+
+def group_page(groups: list, page: int, pages: int, done: set) -> Table:
+    rows = groups[page * PAGE_SIZE : (page + 1) * PAGE_SIZE]
+    table = Table(title=f"{len(done)}/{len(groups)} resolved - page {page +1}/{pages}")
+    table.add_column("#")
+    table.add_column("checked")
+    table.add_column("matched by")
+    table.add_column("dups")
+    table.add_column("members")
+    for n, (key, members) in enumerate(rows, 1):
+        marker = "✓" if page * PAGE_SIZE + n - 1 in done else ""
+        table.add_row(
+            str(n),
+            marker,
+            f"{key[0]}: {key[1]}"[:48],
+            str(len(members)),
+            "| ".join(it.title[:30] for it in members),
+        )
+    return table
+
+def decide(columns, options, key, members):
+    """Show one group; loop until the answer isn't a re-master pick"""
+    master = pick_master(members)
+    while True:
+        paint(show(f"matched by {key[0]}: {key[1]}", members, master, columns))
+        choice = typer.prompt(options, default="s").lower()
+        if choice.isdigit() and 1 <= int(choice) <= len(members):
+            master = members[int(choice) - 1]
+            continue
+        return choice, master
+
+def browse(group: list, resolve) -> set:
+    """Paint pages of groups; resolve(i) decide one: done / skip / quit"""
+    done, page = set(), 0
+    pages = max(1, -(-len(group) // PAGE_SIZE))
+    while True:
+        paint(group_page(group, page, pages, done))
+        choice = typer.prompt("[#] resolve 1,3-5 [n]ext [p]rev [q]uit", default="n").lower()
+        if choice == "n":
+            page = min(page + 1, pages - 1)
+        elif choice == "p":
+            page = max(page - 1, 0)
+        elif choice in ("a", "q"):
+            return done
+        else:
+            try:
+                picks = indices(choice, min(PAGE_SIZE, len(group) - page * PAGE_SIZE))
+            except (ValueError, IndexError):
+                console.print("[red]?[/red]")
+                continue
+            for r in picks:
+                outcome = resolve(page * PAGE_SIZE + r)
+                if outcome == "quit":
+                    return done
+                if outcome == "done":
+                    done.add(page * PAGE_SIZE + r)
