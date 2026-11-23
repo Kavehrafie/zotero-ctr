@@ -15,7 +15,10 @@ class Item(BaseModel):
     item_type: str = ""
     year: int | None = None
     doi: str | None = None
+    publisher: str = ""
     creator: Creator = Creator()
+    creators: list[str] = []
+    tags: list[str] = []
 
     @field_validator("year", mode="before")
     @classmethod

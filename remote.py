@@ -10,8 +10,6 @@ def attachment_uploaded(url: str, username: str, password: str, key: str) -> boo
     request.add_header("Depth", "0")
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
-            return response.status == 200
-    except urllib.error.HTTPError as err:
-        if err.code == 404:
-            return False
-        raise
+            return 200 <= response.status < 300
+    except (urllib.error.HTTPError, urllib.error.URLError):
+        return False

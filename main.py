@@ -1,25 +1,21 @@
-import re
-from collections import defaultdict
-from difflib import SequenceMatcher
-
 import typer
 from pyzotero.errors import LocalAPIKeyRequiredError
 from rich.console import Console
 from rich.table import Table
 
 from config import CONFIG_PATH, load_config, save_config
-from execute import trash_and_free
+from execute import dir_size, free_local, trash_and_free
 from fetch import load_library, zotero_client
+from fixtures import ATTACHMENTS, ITEMS
+from grouping import attachment_key, entry_key, find_groups, pick_master
 from merge import merge_group
-from models import Attachment, Creator, Item
 from preview import first_pdf, open_pdf, thumbnail
-
-FUZZY_THRESHOLD = 0.85
 
 app = typer.Typer()
 console = Console()
 
 
+PAGE_SIZE = 9
 ENTRY_COLUMNS = [
     ("title", lambda it: it.title or "—"),
     ("type", lambda it: it.item_type or "—"),
@@ -35,187 +31,6 @@ ATTACHMENT_COLUMNS = [
     ("file", lambda a: a.filename),
     ("parent item", lambda a: a.parent_key),
 ]
-
-
-ITEMS = [
-    Item(
-        key="A1",
-        title="Textile Histories",
-        year=2019,
-        doi="10.2307/25154106",
-        creator=Creator(first="Maya", last="Calder"),
-    ),
-    Item(
-        key="B7",
-        title="Textile Histories",
-        year=2019,
-        doi="10.2307/25154106",
-        creator=Creator(first="Maya", last="Calder"),
-    ),
-    Item(
-        key="C3",
-        title="Weaving the Nation",
-        year=2017,
-        item_type="book",
-        creator=Creator(first="Ivan", last="Ortega"),
-    ),
-    Item(
-        key="D8",
-        title="Weaving the Nation",
-        year=2017,
-        item_type="journalArticle",
-        creator=Creator(first="Ivan", last="Ortega"),
-    ),
-    Item(
-        key="E2",
-        title="weaving the nation!",
-        year=2017,
-        creator=Creator(first="Ivan", last="Ortega"),
-    ),
-    Item(
-        key="F4",
-        title="The Loom and the Loomed",
-        year=2021,
-        creator=Creator(first="Sara", last="Kwon"),
-    ),
-    Item(
-        key="G9",
-        title="Dye Gardens of Oaxaca",
-        year=2020,
-        creator=Creator(first="Luca", last="Moretti"),
-    ),
-    Item(
-        key="H5",
-        title="Pigment and Empire",
-        year=2015,
-        doi="10.1017/s00104175",
-        creator=Creator(first="Nora", last="Feld"),
-    ),
-    Item(
-        key="J6",
-        title="Pigment and Empire",
-        year=2015,
-        doi="10.1017/s00104175",
-        creator=Creator(first="Nora", last="Feld"),
-    ),
-    Item(
-        key="M4",
-        title="Desert Solitaire",
-        year=1968,
-        creator=Creator(first="Edward", last="Abbey"),
-    ),
-    Item(
-        key="N2",
-        title="Desert Solitaire",
-        creator=Creator(first="Edward", last="Abbey"),
-    ),
-    Item(key="K8", title="", creator=Creator(first="Anon", last="Ymous")),
-    Item(
-        key="P3",
-        title="Dye Gardens of Oaxaka",
-        year=2020,
-        creator=Creator(first="Luca", last="Moretti"),
-    ),
-    Item(
-        key="Q5",
-        title="The Loom and the Loomed: Collected Essays",
-        year=2021,
-        creator=Creator(first="Sara", last="Kwon"),
-    ),
-]
-
-ATTACHMENTS = [
-    Attachment(key="X1", filename="textile-histories.pdf", md5="aa11", parent_key="A1"),
-    Attachment(
-        key="X2", filename="textile-histories (1).pdf", md5="aa11", parent_key="B7"
-    ),
-    Attachment(key="X3", filename="loom.pdf", md5="bb22", parent_key="F4"),
-    Attachment(key="X4", filename="loom copy.pdf", md5="bb22", parent_key="F4"),
-    Attachment(key="X5", filename="dye-gardens.pdf", md5="cc33", parent_key="G9"),
-]
-
-
-def normalize(title: str) -> str:
-    t = title.split(":")[0].strip().lower()
-    t = re.sub(r"^(the|a|an)\s+", "", t)
-    return "".join(ch for ch in t if ch.isalnum())
-
-
-def entry_key(item: Item) -> tuple | None:
-    if item.doi:
-        return "doi", item.doi.lower()
-    if title := normalize(item.title):
-        return "title+year", title, item.year
-    return None
-
-
-def attachment_key(att: Attachment) -> tuple[str, str]:
-    return "md5", att.md5
-
-
-def fuzzy_merged(groups):
-    candidates = [k for k in groups if len(k) == 3 and k[2] is not None]
-    parent = {k: k for k in candidates}
-
-    def find(k):
-        while parent[k] != k:
-            parent[k] = parent[parent[k]]
-            k = parent[k]
-        return k
-
-    for i, k1 in enumerate(candidates):
-        for k2 in candidates[i + 1 :]:
-            if k1[2] != k2[2]:
-                continue
-            sm = SequenceMatcher(a=k1[1], b=k2[1])
-            if sm.quick_ratio() >= FUZZY_THRESHOLD and sm.ratio() >= FUZZY_THRESHOLD:
-                parent[find(k2)] = find(k1)
-    out = {k: v for k, v in groups.items() if k not in parent}
-    clusters = defaultdict(list)
-    for k in candidates:
-        clusters[find(k)].append(k)
-    for keys in clusters.values():
-        if len(keys) > 1:
-            out[("fuzzy", keys[0][1], keys[0][2])] = [
-                m for k in keys for m in groups[k]
-            ]
-        else:
-            out[keys[0]] = groups[keys[0]]
-
-    return out
-
-
-def dups_only(groups):
-    return {k: v for k, v in groups.items() if len(v) > 1}
-
-
-def wildcard_merged(groups):
-    per_title = defaultdict(dict)
-    out = {}
-    for key, numbers in groups.items():
-        if len(key) == 2:  # doi, md5 — already exact
-            out[key] = numbers
-        else:
-            per_title[key[1]][key[2]] = numbers
-    for title, years in per_title.items():
-        if None in years:
-            out[("title", title)] = [m for ms in years.values() for m in ms]
-        else:
-            for year, members in years.items():
-                out[("title+year", title, year)] = members
-    return out
-
-
-def find_groups(entries, key_of):
-    groups = defaultdict(list)
-    for entry in entries:
-        if key := key_of(entry):
-            groups[key].append(entry)
-    return dups_only(fuzzy_merged(wildcard_merged(groups)))
-
-
-def pick_master(members):
-    return min(members, key=lambda e: e.key)
 
 
 def show(title: str, members, master, columns) -> Table:
@@ -350,6 +165,117 @@ def review(
     console.print(f"\n[bold]{mode}[/bold] – {len(planned)} planned action(s):")
     for action in planned:
         console.print(f"  → {action}")
+
+
+@app.command()
+def free(
+    author: str = typer.Option("", "--author", help="creator name substring"),
+    tag: str = typer.Option("", "--tag", help="tag substring"),
+    title: str = typer.Option("", "--title", help="title substring"),
+    execute: bool = typer.Option(
+        False, "--execute", help="remove matched local copies"
+    ),
+):
+    """Free local copies of matching items – entries stay, flies live on WebDAV."""
+    if not (author or tag or title):
+        console.print("give at least one of --author, --tag, --title")
+        raise typer.Exit()
+
+    items, attachments = load_library()
+    children: dict[str, list] = {}
+    for att in attachments:
+        children.setdefault(att.parent_key, []).append(att)
+
+    cfg = load_config()
+    matches = [
+        it
+        for it in items
+        if (
+            (author and any(author.lower() in c.lower() for c in it.creators))
+            or (tag and tag.lower() in (t.lower() for t in it.tags))
+            or (title and title.lower() in it.title.lower())
+        )
+        and any((cfg.storage_root / a.key).exists() for a in children.get(it.key, []))
+    ]
+    console.print(f"{len(matches)} matched item(s)")
+
+    chosen = choose(cfg, children, matches)
+    if not chosen:
+        console.print("nothing selected")
+        raise typer.Exit()
+    if execute and not typer.confirm(
+        f"remove local copies for {len(chosen)} item(s)?"
+    ):
+        raise typer.Exit()
+
+    freed = 0
+    for it in chosen:
+        console.print(f"{it.key} {it.title[:60]}")
+        for att in children.get(it.key, []):
+            status, size = free_local(cfg, att, execute)
+            freed += size
+            console.print(f"  {att.key} {status}")
+    label = "freed" if execute else "would free"
+    console.print(f"\n[bold]{label}: {freed / 1e6:.1f} MB[/bold]")
+
+
+def choose(cfg, children, matches) -> list:
+    selected: set[str] = set()
+    page = 0
+    pages = max(1, -(-len(matches) // PAGE_SIZE))
+    options = "[#] toggle 1,3-5 [a]ll [c]lear [n]ext [p]rev [f]ree [q]uit"
+    while True:
+        rows = matches[page * PAGE_SIZE : page * PAGE_SIZE + PAGE_SIZE]
+        table = Table(
+            title=f"{len(selected)}/{len(matches)} selected — page {page + 1}/{pages}"
+        )
+        table.add_column("#")
+        table.add_column("sel")
+        table.add_column("key")
+        table.add_column("title")
+        table.add_column("creator")
+        table.add_column("year")
+        table.add_column("publisher")
+        table.add_column("local")
+        for n, it in enumerate(rows, 1):
+            kids = children.get(it.key, [])
+            size = sum(dir_size(cfg.storage_root / a.key) for a in kids)
+            mark = "" if it.key in selected else ""
+            table.add_row(
+                str(n),
+                mark,
+                it.key,
+                it.title[:45],
+                ", ".join(it.creators[:2])[:28] or "—",
+                str(it.year or "—"),
+                (it.publisher or "—")[:28],
+                f"{size / 1e6:.1f} MB",
+            )
+        console.print(table)
+        choice = typer.prompt(options).lower()
+        if choice == "n":
+            page = min(page + 1, pages - 1)
+        elif choice == "p":
+            page = max(page - 1, 0)
+        elif choice == "a":
+            selected.update(it.key for it in matches)
+        elif choice == "c":
+            selected.clear()
+        elif choice == "f":
+            return [it for it in matches if it.key in selected]
+        elif choice == "q":
+            raise typer.Exit()
+        else:
+            try:
+                for token in choice.split(","):
+                    lo, _, hi = token.partition("-")
+                    first, last = int(lo), int(hi or lo)
+                    if not 1 <= first <= last <= len(rows):
+                        raise IndexError
+                    for r in range(first - 1, last):
+                        selected.symmetric_difference_update({rows[r].key})
+            except (ValueError, IndexError):
+                console.print("[red]?[/red]")
 
 
 if __name__ == "__main__":

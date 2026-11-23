@@ -19,6 +19,12 @@ def to_item(d) -> Item:
         item_type=d.get("itemType") or "",
         year=d.get("date"),
         doi=d.get("DOI") or None,
+        publisher=d.get("publisher") or "",
+        creators=[
+            f"{c.get('firstName', '')} {c.get('lastName', '') or c.get('name', '')}".strip()
+            for c in d.get("creators") or []
+        ],
+        tags=[t["tag"] for t in d.get("tags") or []],
         creator=Creator(
             first=first.get("firstName", ""),
             last=first.get("lastName") or first.get("name", ""),
