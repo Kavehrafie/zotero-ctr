@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import time
 from pathlib import Path
 
@@ -9,6 +10,9 @@ from remote import attachment_uploaded
 
 CACHE_FILE = Path(".zotero-cache.json")
 CACHE_TTL_SECONDS = 3600
+
+DB = Path.home() / "Zotero" / "zotero.sqlite"
+SKIP_TYPES = {"note", "attachment"}
 
 
 def to_item(d) -> Item:
@@ -51,6 +55,25 @@ PAGE_ITEMS = 500
 
 
 def fetch_library() -> tuple[list[Item], list[Attachment]]:
+    """Read Zotero's own database: the snapshot is always current"""
+    conn = sqlite3.connect(f"file:{DB}?mode=ro&immutable=1", uri=True)
+    types = dict(conn.execute("SELECT itemTypeID, typeName FROM deletedItems"))
+    trashed = {r[0] for r in conn.execute("SELECT itemID FROM deletedItems")}
+    key_of = dict(conn.execute("SELECT itemID, key FROM items"))
+
+    data: dict[int, dict[str, str]] = {}
+    for item_id, field, value in conn.execute(
+        "SELECT id.itemID, f.fieldName, v.value FROM itemData id "
+        "JOIN fields f ON f.fieldID = id.fieldID "
+        "JOIN itemDataValues v ON v.valueID = id.valueID"
+    ):
+        data.setdefault(item_id, {})[field] = value
+
+    creators: dict[int, list[Creator]] = {}
+    for item_id, first, last in conn.execute(
+
+    )
+
     z = zotero_client()
     entries = [
         raw["data"]

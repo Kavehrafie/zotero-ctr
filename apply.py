@@ -1,6 +1,6 @@
 import shutil
 
-from pyzotero import LocalAPIKeyRequiredError
+from pyzotero.errors import LocalAPIKeyRequiredError, PyZoteroError
 
 from config import CONFIG_PATH, load_config, save_config
 from fetch import zotero_client
@@ -15,7 +15,7 @@ class WriteFailed(RuntimeError):
 
 
 def grant(z, cfg):
-    granted = z.authoroze_local("zotero-ctr")
+    granted = z.authorize_local("zotero-ctr")
     if not granted["remember"]:
         console.print(
             "[yellow]Zotero granted a ONE-TIME key – click 'Always Allow'"
@@ -36,20 +36,20 @@ def open_write_session(execute: bool):
     return z, cfg
 
 
-def _put(z, key: str, changes: dict):
+def _put(z, key: str, changes: dict) -> None:
     version = z.item(key)["data"]["version"]
-    return z.update_item({"key": key, "version": version}, changes)
+    z.update_item({"key": key, "version": version, **changes})
 
 
 def write_item(z, key: str, changes: dict, cfg) -> None:
     """Update one item from its LIVE version; re-authorize once, raise on rejection"""
     try:
-        resp = _put(z, key, changes)
+        _put(z, key, changes)
     except LocalAPIKeyRequiredError:
         save_config(CONFIG_PATH, grant(z, cfg))
-        resp = _put(z, key, changes)
-    if resp.status_code >= 300:
-        raise WriteFailed(f"{key}: HTTP {resp.status_code}")
+        _put(z, key, changes)
+    except PyZoteroError as err:
+        raise WriteFailed(f"{key}: {err}") from err
 
 
 def apply(command, z, cfg) -> str:
@@ -58,7 +58,7 @@ def apply(command, z, cfg) -> str:
         write_item(z, command.key, command.changes, cfg)
         return f"wrote {command.key}: {', '.join(sorted(command.changes))}"
     if isinstance(command, Trash):
-        write_item(z, command.key, {"delete": 1}, cfg)
+        write_item(z, command.key, {"deleted": 1}, cfg)
         return f"trashed {command.key}"
     if isinstance(command, SplitCreators):
         live = z.item(command.key)["data"]["creators"]
