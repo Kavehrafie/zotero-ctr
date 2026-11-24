@@ -1,6 +1,5 @@
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -36,40 +35,32 @@ def pages(path: Path) -> int:
     return int(match.group(1)) if match else 0
 
 
-def thumbnail(path: Path) -> None:
-    """Evidence view: first two pages plus one middle page, in a grid."""
-    if not shutil.which("timg"):
-        if sys.platform == "win32":
-            os.startfile(path)  # no timg here – open the PDF instead
-        else:
-            print("(timg not installed – sudo dnf install timg)")
-        return
-    if shutil.which("pdftoppm"):
-        _evidence_grid(path)
-        return
-    subprocess.run(["timg", str(path)], check=False)
+def evidence_images(path: Path, full: bool = False) -> list:
+    """PIL page images: 1/2/middle for a lone PDF, cover page only for many."""
+    from PIL import Image as PILImage
 
-
-def _evidence_grid(path: Path) -> None:
     total = pages(path)
-    picks = sorted({1, 2, total // 2 + 1} & set(range(1, total + 1)))
+    wanted = (
+        sorted({1, 2, total // 2 + 1} & set(range(1, total + 1)))
+        if full
+        else [1]
+    )
+    out = []
     with tempfile.TemporaryDirectory() as tmp:
-        shots = []
-        for n in picks:
+        for n in wanted:
             prefix = Path(tmp) / f"pg{n}"
             subprocess.run(
                 ["pdftoppm", "-png", "-r", "60", "-f", str(n), "-l", str(n),
                  str(path), str(prefix)],
                 check=False,
             )
-            shots += sorted(
+            shots = sorted(
                 prefix.parent.glob(f"{prefix.name}-*.png"),
                 key=lambda p: int(p.stem.rsplit("-", 1)[-1]),
             )
-        if shots:
-            subprocess.run(
-                ["timg", f"--grid={len(shots)}x1", *(str(s) for s in shots)], check=False
-            )
+            for shot in shots:
+                out.append(PILImage.open(shot).copy())
+    return out
 
 
 def open_pdf(path: Path) -> None:

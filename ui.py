@@ -1,10 +1,12 @@
 from typing import Callable, NamedTuple
 
+from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
-from textual.containers import VerticalScroll
+from textual.containers import Horizontal, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import DataTable, Footer, Static
+from textual_image.widget import AutoImage
 
 from grouping import attachment_key, entry_key
 from plan import FILLABLE, describe
@@ -27,6 +29,7 @@ class Action(NamedTuple):
     plan: Callable | None = None
     peek: Callable | None = None
     dialog: Callable | None = None
+    screen: Callable | None = None
 
 
 class Session(NamedTuple):
@@ -47,8 +50,8 @@ class Confirm(ModalScreen[bool]):
     BINDINGS = [("y", "yes", "apply"), ("n", "no", "cancel"), ("escape", "no", "cancel")]
     CSS = """
     Confirm { align: center middle; }
-    #panel { width: 90%; height: 80%; border: round $accent; padding: 0 2; background: $surface; }
-    #hints { dock: bottom; content-align: center middle; height: 1; color: $accent; }
+    Confirm #panel { width: 90%; height: 80%; border: round $accent; padding: 0 2; background: $surface; }
+    Confirm #hints { dock: bottom; content-align: center middle; height: 1; color: $accent; }
     """
 
     def __init__(self, plan: list) -> None:
@@ -57,7 +60,7 @@ class Confirm(ModalScreen[bool]):
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="panel"):
-            yield Static("\n".join(f"  {describe(c)}" for c in self.plan))
+            yield Static(Text("\n".join(f"  {describe(c)}" for c in self.plan)))
         yield Static("y apply · n cancel · esc cancel", id="hints")
 
     def on_mount(self) -> None:
@@ -72,16 +75,28 @@ class Confirm(ModalScreen[bool]):
 
 class Report(Screen):
     BINDINGS = [("enter", "back", "back"), ("q", "back", "back")]
+    CSS = """
+    Report { align: center middle; }
+    Report #panel { width: 90%; height: 80%; border: round $accent; padding: 0 2; background: $surface; }
+    Report #hints { dock: bottom; content-align: center middle; height: 1; color: $accent; }
+    """
+    BORDER_TITLE = "report"
 
     def __init__(self, lines: list[str]) -> None:
         self.lines = lines
         super().__init__()
 
     def compose(self) -> ComposeResult:
-        yield VerticalScroll(Static("\n".join(self.lines)))
+        body = Text()
+        for line in self.lines:
+            body.append(line, style="red" if line.startswith("✗") else None)
+            body.append("\n")
+        with VerticalScroll(id="panel"):
+            yield Static(body)
+        yield Static("enter back · q back", id="hints")
 
     def on_mount(self) -> None:
-        self.query_one(VerticalScroll).focus()
+        self.query_one("#panel", VerticalScroll).focus()
 
     def action_back(self) -> None:
         self.app.pop_screen()
@@ -141,7 +156,10 @@ class MergeDialog(Screen):
                 tag = "MASTER" if e is self.master else "dup  "
                 line = f"{cur} {tag} {e.key}  {e.title[:42]}"
                 if i == self.pos:
-                    line += f"\n          {e.year or '—'} · {e.publisher or '—'} · {e.doi or 'no DOI'}"
+                    line += (
+                        f"\n          {e.year or '—'} · "
+                        f"{e.publisher or '—'} · {e.doi or 'no DOI'}"
+                    )
                 out.append(line)
                 if e is not self.master:
                     for attr, field in FILLABLE.items():
@@ -166,7 +184,7 @@ class MergeDialog(Screen):
             f"outcome: {fills} fill write(s) · {len(self.entries) - 1} trash"
             f" · {moves} attachment move(s)"
         )
-        self.query_one("#brief", Static).update("\n".join(out))
+        self.query_one("#brief", Static).update(Text("\n".join(out)))
 
     def action_cursor_up(self) -> None:
         self.pos = max(0, self.pos - 1)
@@ -195,6 +213,37 @@ class MergeDialog(Screen):
 
     def action_no(self) -> None:
         self.dismiss(False)
+
+
+class Evidence(ModalScreen):
+    """The selected rows' PDF pages, rendered inside the app."""
+
+    BINDINGS = [("escape", "close", "close"), ("q", "close", "close"), ("enter", "close", "close")]
+    CSS = """
+    Evidence { align: center middle; }
+    Evidence #panel { width: 90%; height: 85%; border: round $accent; background: $surface; }
+    Evidence #pages { height: 1fr; align: center middle; }
+    Evidence Image { width: 1fr; height: 1fr; }
+    Evidence #hints { dock: bottom; content-align: center middle; height: 1; color: $accent; }
+    """
+    BORDER_TITLE = "evidence"
+
+    def __init__(self, images: list) -> None:
+        self.images = images
+        super().__init__()
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="panel"):
+            with Horizontal(id="pages"):
+                if self.images:
+                    for img in self.images:
+                        yield AutoImage(img)
+                else:
+                    yield Static("no PDF on disk for the selection", id="hint")
+        yield Static("esc close", id="hints")
+
+    def action_close(self) -> None:
+        self.dismiss(None)
 
 
 class CtrApp(App):
@@ -347,36 +396,65 @@ class CtrApp(App):
         if not selection:
             self.notify("space-select rows first, then press the action key", severity="warning")
             return
+        if action.screen:
+            self.push_screen(action.screen(selection))
+            return
         if action.peek:
             with self.suspend():
-                print(action.peek(selection))
+                try:
+                    print(action.peek(selection))
+                    input("\n  [enter] back to the table…")
+                except Exception as err:
+                    input(f"\n  peek failed: {err}\n  [enter] back…")
             return
         if action.dialog:
             dlg = action.dialog(selection)
-            self.push_screen(
-                dlg, lambda ok: self.apply_plan(dlg.build_plan(dlg)) if ok else None
-            )
+            self.push_screen(dlg, self.dialog_ok(dlg))
             return
         plan = action.plan and action.plan(selection)
         if not plan:
             self.notify("nothing to do")
             return
         if self.execute:
-            self.push_screen(
-                Confirm(plan), lambda ok: self.apply_plan(plan) if ok else None
-            )
+            self.push_screen(Confirm(plan), self.confirm_ok(plan))
         else:
             self.apply_plan(plan)
 
+    def confirm_ok(self, plan: list) -> Callable:
+        def run(ok: bool) -> None:
+            if ok:
+                self.call_after_refresh(self.apply_plan, plan)
+
+        return run
+
+    def dialog_ok(self, dlg) -> Callable:
+        def run(ok: bool) -> None:
+            if ok:
+                self.call_after_refresh(self.apply_plan, dlg.build_plan(dlg))
+
+        return run
+
+    @work(thread=True)
     def apply_plan(self, plan: list) -> None:
         if self.execute:
-            lines = [self.session.do(c) for c in plan]
-            self.consume_selection()
+            lines = []
+            for command in plan:
+                try:
+                    lines.append(self.session.do(command))
+                except Exception as err:
+                    lines.append(f"✗ {type(err).__name__}: {err}")
+                    break
         else:
             lines = [describe(c) for c in plan]
-        self.run_log.extend(lines)
-        self.push_screen(Report(lines))
-        self.report_status()
+
+        def done() -> None:
+            if self.execute:
+                self.consume_selection()
+            self.run_log.extend(lines)
+            self.push_screen(Report(lines))
+            self.report_status()
+
+        self.call_from_thread(done)
 
     def consume_selection(self) -> None:
         rows = self.session.rows

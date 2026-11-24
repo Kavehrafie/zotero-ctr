@@ -75,7 +75,10 @@ def plan_free(items, children: dict[str, list], storage_root) -> list[Command]:
 def describe(command: Command) -> str:
     """One dry-run line per command – the plan, printed."""
     if isinstance(command, Write):
-        return f"write {command.key}: {', '.join(sorted(command.changes))}"
+        fields = ", ".join(
+            f"{field} = {str(value)[:48]}" for field, value in command.changes.items()
+        )
+        return f"write {command.key}: {fields}"
     if isinstance(command, Trash):
         return f"trash {command.key}"
     if isinstance(command, SplitCreators):

@@ -8,6 +8,7 @@ dependencies = [
   "pyzotero>=1.17.0",
   "rich>=15.0.0",
   "textual>=8.2.8",
+  "textual-image>=0.14.4",
   "typer>=0.29.2",
 ]
 

@@ -6,9 +6,9 @@ from execute import dir_size
 from fetch import load_library
 from grouping import find_groups, pick_master
 from normalize import clean_title
-from plan import FILLABLE, SplitCreators, Write, plan_delete, plan_free, plan_merge
-from preview import attachment_pdf, first_pdf, open_pdf, thumbnail
-from ui import SOURCES, Action, CtrApp, MergeDialog, Session
+from plan import SplitCreators, Write, plan_delete, plan_free, plan_merge
+from preview import attachment_pdf, evidence_images, first_pdf, open_pdf
+from ui import SOURCES, Action, CtrApp, Evidence, MergeDialog, Session
 
 
 def reporter(factory) -> Callable:
@@ -23,7 +23,7 @@ def reporter(factory) -> Callable:
         try:
             return apply(command, lazy["z"], lazy["cfg"])
         except WriteFailed as e:
-            return f"[red]{e}[/red]"
+            return f"✗ {e}"
 
     return do
 
@@ -95,14 +95,13 @@ def review_session(what: str) -> Session:
         else (lambda m: attachment_pdf(cfg, m))
     )
 
-    def pdf_peek(selected) -> str:
-        lines = []
+    def evidence_screen(selected) -> Evidence:
+        images = []
         for m in selected:
             path = pdf_of(m)
-            lines.append(f"  {m.key}: {path or 'no PDF'}")
             if path:
-                thumbnail(path)
-        return "\n".join(lines)
+                images += evidence_images(path, full=len(selected) == 1)
+        return Evidence(images)
 
     def open_peek(selected) -> str:
         m = selected[0]
@@ -126,7 +125,7 @@ def review_session(what: str) -> Session:
     )
     actions += [
         Action("d", "delete dups", plan=delete_plan),
-        Action("v", "pdf evidence", peek=pdf_peek),
+        Action("v", "pdf evidence", screen=evidence_screen),
         Action("o", "open", peek=open_peek),
     ]
     rows = [m for _, members in groups.items() for m in members]

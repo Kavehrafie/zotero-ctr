@@ -40,5 +40,9 @@ def test_plan_free_skip_missing_folders(tmp_path):
 
 def test_describe_lines():
     assert describe(Trash("B7")) == "trash B7"
-    assert describe(Write("A1", {"DOI": "x"})) == "write A1: DOI"
+    assert describe(Write("A1", {"DOI": "x"})) == "write A1: DOI = x"
+    assert (
+        describe(Write("M1", {"DOI": "10.1/x", "publisher": "P"}))
+        == "write M1: DOI = 10.1/x, publisher = P"
+    )
     assert describe(FreeLocal("X1", 2_400_000)) == "free X1 (2.4 MB)"
