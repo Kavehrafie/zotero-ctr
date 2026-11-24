@@ -1,13 +1,15 @@
 import shutil
 
 from pyzotero.errors import LocalAPIKeyRequiredError, PyZoteroError
+from rich.console import Console
 
 from config import CONFIG_PATH, load_config, save_config
 from fetch import zotero_client
 from normalize import split_creators
 from plan import FreeLocal, SplitCreators, Trash, Write
 from remote import attachment_uploaded
-from ui import console
+
+console = Console()
 
 
 class WriteFailed(RuntimeError):

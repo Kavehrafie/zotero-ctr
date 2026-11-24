@@ -1,6 +1,8 @@
+import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -37,7 +39,10 @@ def pages(path: Path) -> int:
 def thumbnail(path: Path) -> None:
     """Evidence view: first two pages plus one middle page, in a grid."""
     if not shutil.which("timg"):
-        print("(timg not installed – sudo dnf install timg)")
+        if sys.platform == "win32":
+            os.startfile(path)  # no timg here – open the PDF instead
+        else:
+            print("(timg not installed – sudo dnf install timg)")
         return
     if shutil.which("pdftoppm"):
         _evidence_grid(path)
@@ -68,4 +73,7 @@ def _evidence_grid(path: Path) -> None:
 
 
 def open_pdf(path: Path) -> None:
-    subprocess.run(["xdg-open", str(path)], check=False)
+    if sys.platform == "win32":
+        os.startfile(path)
+    else:
+        subprocess.run(["xdg-open", str(path)], check=False)

@@ -48,8 +48,8 @@ def plan_merge(
             if value and attr not in filled and not getattr(master, attr):
                 changes[field] = value
                 filled.add(attr)
-            if changes:
-                plan.append(Write(master.key, changes))
+        if changes:
+            plan.append(Write(master.key, changes))
     plan += [Trash(d.key) for d in dups]
 
     return plan
