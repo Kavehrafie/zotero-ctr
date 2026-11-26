@@ -33,3 +33,4 @@ class Attachment(BaseModel):
     filename: str = ""
     md5: str = ""
     parent_key: str = ""
+    content_type: str = ""

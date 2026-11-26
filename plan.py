@@ -61,7 +61,7 @@ def plan_delete(members: list[Item]) -> list[Command]:
     return [Trash(e.key) for e in members if e is not master]
 
 
-def plan_free(items, children: dict[str, list], storage_root) -> list[Command]:
+def plan_free(items, children: dict[str, list], storage_root) -> list[FreeLocal]:
     """Free the local folder of every attachment that has one on disk."""
     plan = []
     for it in items:

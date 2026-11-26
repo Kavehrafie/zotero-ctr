@@ -43,7 +43,7 @@ def fetch_library() -> tuple[list[Item], list[Attachment]]:
 
     items = []
     for item_id, key, version, type_id in conn.execute(
-        "SELECT itemID, key, version, itemTypeID FROM items"
+        "SELECT itemID, key, version, itemTypeID FROM items WHERE libraryID = 1"
     ):
         if item_id in trashed or types[type_id] in SKIP_TYPES:
             continue
@@ -71,10 +71,12 @@ def fetch_library() -> tuple[list[Item], list[Attachment]]:
             filename=path.removeprefix("storage:"),
             md5=storage_hash or "",
             parent_key=key_of.get(parent_id, ""),
+            content_type=content_type,
         )
-        for (item_id, key, version, parent_id, path, storage_hash) in conn.execute(
-            "SELECT i.itemID, i.key, i.version, ia.parentItemID, ia.path, ia.storageHash "
-            "FROM itemAttachments ia JOIN items i ON i.itemID = ia.itemID"
+        for (item_id, key, version, parent_id, path, storage_hash, content_type) in conn.execute(
+            "SELECT i.itemID, i.key, i.version, ia.parentItemID, ia.path, ia.storageHash, ia.contentType "
+            "FROM itemAttachments ia JOIN items i ON i.itemID = ia.itemID "
+            "WHERE i.libraryID = 1"
         )
         if storage_hash and item_id not in trashed
     ]
@@ -128,6 +130,7 @@ def to_attachment(d) -> Attachment:
         filename=d.get("filename") or "",
         md5=d["md5"],
         parent_key=d.get("parentItem") or "",
+        content_type=d.get("contentType", ""),
     )
 
 

@@ -2,9 +2,9 @@ from typing import Callable
 
 from apply import WriteFailed, apply, open_write_session
 from config import load_config
-from execute import dir_size
 from fetch import load_library
 from grouping import find_groups, pick_master
+from icons import file_icon
 from normalize import clean_title
 from plan import SplitCreators, Write, plan_delete, plan_free, plan_merge
 from preview import attachment_pdf, evidence_images, first_pdf, open_pdf
@@ -65,7 +65,7 @@ def review_session(what: str) -> Session:
     groups = find_groups(entries, src.key_of)
     cfg = load_config()
     label_of = {}
-    for _, members in groups.items():
+    for members in groups.values():
         label = pick_master(members)
         name = (label.title if what == "entries" else label.filename)[:32]
         for m in members:
@@ -113,12 +113,20 @@ def review_session(what: str) -> Session:
     item_cell = (
         (lambda m: [m.title, str(m.year or "—"), ", ".join(m.creators[:2]) or "—", label_of[m.key]])
         if what == "entries"
-        else (lambda a: [a.filename, a.key, a.parent_key, label_of[a.key]])
+        else (
+            lambda a: [
+                file_icon(a.filename, a.content_type),
+                a.filename,
+                a.key,
+                a.parent_key,
+                label_of[a.key],
+            ]
+        )
     )
     headers = (
         ["title", "year", "creators", "dup of"]
         if what == "entries"
-        else ["file", "key", "parent", "dup of"]
+        else ["", "file", "key", "parent", "dup of"]
     )
     actions = (
         [Action("m", "merge", dialog=merge_ask)] if what == "entries" else []
@@ -133,7 +141,7 @@ def review_session(what: str) -> Session:
         title="duplicate items",
         rows=rows,
         headers=headers,
-        widths=(40, 6, 26, 32) if what == "entries" else (40, 12, 12, 32),
+        widths=(40, 6, 26, 32) if what == "entries" else (3, 36, 12, 12, 32),
         cell=item_cell,
         actions=actions,
         do=reporter(lambda: open_write_session(True)),
@@ -153,12 +161,10 @@ def free_session() -> Session:
         if any((cfg.storage_root / a.key).exists() for a in children.get(it.key, []))
     ]
 
-    sizes = {
-        it.key: sum(
-            dir_size(cfg.storage_root / a.key) for a in children.get(it.key, [])
-        )
-        for it in rows
+    freeable = {
+        it.key: plan_free([it], children, cfg.storage_root) for it in rows
     }
+    sizes = {key: sum(c.size for c in cmds) for key, cmds in freeable.items()}
 
     def item_cell(it) -> list[str]:
         return [
@@ -171,7 +177,7 @@ def free_session() -> Session:
         ]
 
     def free_plan(selection) -> list:
-        return plan_free(selection, children, cfg.storage_root)
+        return [cmd for it in selection for cmd in freeable[it.key]]
 
     return Session(
         title="matched items",

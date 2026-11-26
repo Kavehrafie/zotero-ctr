@@ -1,15 +1,22 @@
+import tomllib
+from pathlib import Path
 from typing import Callable, NamedTuple
 
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, VerticalScroll
-from textual.screen import ModalScreen, Screen
+from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Static
 from textual_image.widget import AutoImage
 
 from grouping import attachment_key, entry_key
+from icons import file_icon
 from plan import FILLABLE, describe
+
+VERSION = tomllib.loads(
+    (Path(__file__).parent / "pyproject.toml").read_text()
+)["project"]["version"]
 
 
 class Source(NamedTuple):
@@ -44,27 +51,51 @@ class Session(NamedTuple):
     widths: tuple = ()
 
 
-class Confirm(ModalScreen[bool]):
-    """The plan, then y or n."""
+class Panel(ModalScreen[object]):
+    """Framed modal: titled panel plus a hints line; subclasses supply the body.
 
-    BINDINGS = [("y", "yes", "apply"), ("n", "no", "cancel"), ("escape", "no", "cancel")]
-    CSS = """
-    Confirm { align: center middle; }
-    Confirm #panel { width: 90%; height: 80%; border: round $accent; padding: 0 2; background: $surface; }
-    Confirm #hints { dock: bottom; content-align: center middle; height: 1; color: $accent; }
+    border_title renders only on a widget that has a border, so the title goes
+    on the panel, never on the screen. The framing lives in DEFAULT_CSS, not
+    CSS: a screen's own CSS registers only when that screen mounts (as its one
+    most-derived CSS var), so base-class CSS would apply only after some other
+    modal had mounted first. DEFAULT_CSS is collected per MRO base at startup
+    -- SCOPED_CSS=False unscopes it -- with no mount-order trap."""
+
+    SCOPED_CSS = False
+    DEFAULT_CSS = """
+    Panel { align: center middle; }
+    Panel #panel { width: 70%; height: 80%; border: round $accent; padding: 0 2; background: $surface; }
+    Panel #hints { dock: bottom; content-align: center middle; height: 1; color: $accent; }
     """
+    HINTS = ""
+    panel_title = ""
 
-    def __init__(self, plan: list) -> None:
-        self.plan = plan
-        super().__init__()
+    def body(self) -> ComposeResult:
+        raise NotImplementedError
 
     def compose(self) -> ComposeResult:
-        with VerticalScroll(id="panel"):
-            yield Static(Text("\n".join(f"  {describe(c)}" for c in self.plan)))
-        yield Static("y apply · n cancel · esc cancel", id="hints")
+        with VerticalScroll(id="panel") as panel:
+            panel.border_title = self.panel_title
+            yield from self.body()
+        yield Static(self.HINTS, id="hints")
 
     def on_mount(self) -> None:
         self.query_one("#panel", VerticalScroll).focus()
+
+
+class Confirm(Panel):
+    """The plan, then y or n."""
+
+    BINDINGS = [("y", "yes", "apply"), ("n", "no", "cancel"), ("escape", "no", "cancel")]
+    HINTS = "y apply · n cancel · esc cancel"
+
+    def __init__(self, plan: list, label: str) -> None:
+        self.plan = plan
+        self.panel_title = f"{label} · EXECUTE · {len(plan)} command(s)"
+        super().__init__()
+
+    def body(self) -> ComposeResult:
+        yield Static(Text("\n".join(f"  {describe(c)}" for c in self.plan)))
 
     def action_yes(self) -> None:
         self.dismiss(True)
@@ -73,36 +104,32 @@ class Confirm(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class Report(Screen):
+class Report(Panel):
     BINDINGS = [("enter", "back", "back"), ("q", "back", "back")]
-    CSS = """
-    Report { align: center middle; }
-    Report #panel { width: 90%; height: 80%; border: round $accent; padding: 0 2; background: $surface; }
-    Report #hints { dock: bottom; content-align: center middle; height: 1; color: $accent; }
-    """
-    BORDER_TITLE = "report"
+    HINTS = "enter back · q back"
 
     def __init__(self, lines: list[str]) -> None:
         self.lines = lines
+        failed = sum(1 for line in lines if line.startswith("✗"))
+        self.panel_title = (
+            f"report · {len(lines) - failed} ok · {failed} failed"
+            if failed
+            else f"report · {len(lines)} ok"
+        )
         super().__init__()
 
-    def compose(self) -> ComposeResult:
+    def body(self) -> ComposeResult:
         body = Text()
         for line in self.lines:
             body.append(line, style="red" if line.startswith("✗") else None)
             body.append("\n")
-        with VerticalScroll(id="panel"):
-            yield Static(body)
-        yield Static("enter back · q back", id="hints")
-
-    def on_mount(self) -> None:
-        self.query_one("#panel", VerticalScroll).focus()
+        yield Static(body)
 
     def action_back(self) -> None:
         self.app.pop_screen()
 
 
-class MergeDialog(Screen):
+class MergeDialog(Panel):
     """Pick the master and each attachment's fate, then apply."""
 
     BINDINGS = [
@@ -114,10 +141,15 @@ class MergeDialog(Screen):
         ("n", "no", "cancel"),
         ("escape", "no", "cancel"),
     ]
+    HINTS = "↑/↓ move · m make master · a keep/drop att · y apply · n cancel"
+    CSS = """
+    MergeDialog #panel { width: 90%; height: 85%; }
+    """
 
     def __init__(self, entries: list, attachments_of: dict, master) -> None:
         super().__init__()
         self.entries = entries
+        self.panel_title = f"merge · {len(entries)} entries · pick master"
         self.master = master
         self.atts = attachments_of
         self.fates: dict[str, str] = {}
@@ -136,18 +168,11 @@ class MergeDialog(Screen):
                 self.fates.setdefault(a.key, "move → master")
         self.pos = min(self.pos, len(self.rows) - 1)
 
-    def compose(self) -> ComposeResult:
-        yield VerticalScroll(Static("", id="brief"))
-        yield Static(
-            "↑/↓ move · m make master · a keep/drop att · y apply · n cancel",
-            id="hints",
-        )
+    def body(self) -> ComposeResult:
+        yield Static(self.brief_text(), id="brief")
 
-    def on_mount(self) -> None:
-        self.query_one(VerticalScroll).focus()
-        self.call_after_refresh(self._refresh_panel)
-
-    def _refresh_panel(self) -> None:
+    def brief_text(self) -> Text:
+        """The dialog body, built eagerly — compose paints it on the first frame."""
         out = []
         fills = 0
         for i, (e, a) in enumerate(self.rows):
@@ -176,7 +201,8 @@ class MergeDialog(Screen):
                                 )
             else:
                 out.append(
-                    f"{cur}   att  {a.key}  {self.fates[a.key]:<24} {a.filename[:30]}"
+                    f"{cur}   {file_icon(a.filename, a.content_type)} {a.key}"
+                    f"  {self.fates[a.key]:<24} {a.filename[:30]}"
                 )
         moves = sum(1 for v in self.fates.values() if v.startswith("move"))
         out.append("")
@@ -184,7 +210,10 @@ class MergeDialog(Screen):
             f"outcome: {fills} fill write(s) · {len(self.entries) - 1} trash"
             f" · {moves} attachment move(s)"
         )
-        self.query_one("#brief", Static).update(Text("\n".join(out)))
+        return Text("\n".join(out))
+
+    def _refresh_panel(self) -> None:
+        self.query_one("#brief", Static).update(self.brief_text())
 
     def action_cursor_up(self) -> None:
         self.pos = max(0, self.pos - 1)
@@ -215,32 +244,29 @@ class MergeDialog(Screen):
         self.dismiss(False)
 
 
-class Evidence(ModalScreen):
+class Evidence(Panel):
     """The selected rows' PDF pages, rendered inside the app."""
 
     BINDINGS = [("escape", "close", "close"), ("q", "close", "close"), ("enter", "close", "close")]
     CSS = """
-    Evidence { align: center middle; }
-    Evidence #panel { width: 90%; height: 85%; border: round $accent; background: $surface; }
+    Evidence #panel { width: 90%; height: 85%; }
     Evidence #pages { height: 1fr; align: center middle; }
     Evidence Image { width: 1fr; height: 1fr; }
-    Evidence #hints { dock: bottom; content-align: center middle; height: 1; color: $accent; }
     """
-    BORDER_TITLE = "evidence"
+    HINTS = "esc close"
 
     def __init__(self, images: list) -> None:
         self.images = images
+        self.panel_title = f"evidence · {len(images)} page(s)" if images else "evidence"
         super().__init__()
 
-    def compose(self) -> ComposeResult:
-        with VerticalScroll(id="panel"):
-            with Horizontal(id="pages"):
-                if self.images:
-                    for img in self.images:
-                        yield AutoImage(img)
-                else:
-                    yield Static("no PDF on disk for the selection", id="hint")
-        yield Static("esc close", id="hints")
+    def body(self) -> ComposeResult:
+        with Horizontal(id="pages"):
+            if self.images:
+                for img in self.images:
+                    yield AutoImage(img)
+            else:
+                yield Static("no PDF on disk for the selection")
 
     def action_close(self) -> None:
         self.dismiss(None)
@@ -256,11 +282,11 @@ class CtrApp(App):
     BINDINGS = [
         ("space", "select", "select"),
         ("x", "execute", "toggle execute"),
-        ("m", "key_m", "merge"),
-        ("d", "key_d", "delete"),
-        ("v", "key_v", "evidence"),
-        ("o", "key_o", "open"),
-        ("f", "key_f", "fix"),
+        ("m", "act('m')", "merge"),
+        ("d", "act('d')", "trash dups"),
+        ("v", "act('v')", "evidence"),
+        ("o", "act('o')", "open"),
+        ("f", "act('f')", "apply"),
     ]
 
     def __init__(self, views: dict[str, Callable]):
@@ -269,7 +295,6 @@ class CtrApp(App):
         self.current = self.order[0] if self.order else ""
         self.execute = False
         self.selected: set[int] = set()
-        self.run_log: list = []
         self.sessions: dict[str, Session] = {}
         super().__init__()
 
@@ -300,7 +325,16 @@ class CtrApp(App):
         table = self.query_one("#rows", DataTable)
         self.prepare(table)
         table.focus()
+        self.refresh_bindings()
         self.report_status()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """The footer lists only what the current view can do."""
+        if action != "act":
+            return True
+        if self.screen is not self.default_screen or self.current not in self.sessions:
+            return None
+        return True if any(a.key == parameters[0] for a in self.session.actions) else None
 
     @work(thread=True, exclusive=True)
     def _build_session(self, view: str) -> None:
@@ -324,9 +358,13 @@ class CtrApp(App):
             tail = f"{len(self.session.rows)} rows"
         else:
             tail = f"empty — pick a mode with 1-{len(self.order)}"
-        self.query_one("#status", Static).update(f"{legend} · {mode} · {tail}")
+        self.query_one("#status", Static).update(
+            f"zotero-ctr v{VERSION} · {legend} · {mode} · {tail}"
+        )
 
     def action_execute(self) -> None:
+        if self.screen is not self.default_screen:
+            return
         self.execute = not self.execute
         self.report_status()
 
@@ -351,28 +389,13 @@ class CtrApp(App):
             return
         if event.character and event.character.isdigit():
             n = int(event.character)
-            if n <= len(self.order):
+            if 1 <= n <= len(self.order):
                 self.show(self.order[n - 1])
 
     def action_select(self) -> None:
         self.toggle_cursor_row()
 
-    def action_key_m(self) -> None:
-        self.act("m")
-
-    def action_key_d(self) -> None:
-        self.act("d")
-
-    def action_key_v(self) -> None:
-        self.act("v")
-
-    def action_key_o(self) -> None:
-        self.act("o")
-
-    def action_key_f(self) -> None:
-        self.act("f")
-
-    def act(self, key: str) -> None:
+    def action_act(self, key: str) -> None:
         if self.screen is not self.default_screen or self.current not in self.sessions:
             self.notify("still loading…")
             return
@@ -416,7 +439,7 @@ class CtrApp(App):
             self.notify("nothing to do")
             return
         if self.execute:
-            self.push_screen(Confirm(plan), self.confirm_ok(plan))
+            self.push_screen(Confirm(plan, action.label), self.confirm_ok(plan))
         else:
             self.apply_plan(plan)
 
@@ -434,24 +457,34 @@ class CtrApp(App):
 
         return run
 
-    @work(thread=True)
     def apply_plan(self, plan: list) -> None:
-        if self.execute:
-            lines = []
-            for command in plan:
-                try:
-                    lines.append(self.session.do(command))
-                except Exception as err:
-                    lines.append(f"✗ {type(err).__name__}: {err}")
-                    break
-        else:
-            lines = [describe(c) for c in plan]
+        """Dry-run reports immediately; execute writes off the UI thread."""
+        if not self.execute:
+            self.push_screen(Report([describe(c) for c in plan]))
+            return
+        self._apply(plan)
+
+    @work(thread=True)
+    def _apply(self, plan: list) -> None:
+        lines = []
+        for command in plan:
+            try:
+                lines.append(self.session.do(command))
+            except Exception as err:
+                lines.append(f"✗ {type(err).__name__}: {err}")
+                break
 
         def done() -> None:
-            if self.execute:
-                self.consume_selection()
-            self.run_log.extend(lines)
-            self.push_screen(Report(lines))
+            self.consume_selection()
+            failed = [line for line in lines if line.startswith("✗")]
+            if failed:
+                self.push_screen(Report(lines))
+            self.notify(
+                f"✓ {len(lines) - len(failed)} applied"
+                if not failed
+                else f"✗ {len(failed)} of {len(lines)} failed — details in report",
+                severity="information" if not failed else "error",
+            )
             self.report_status()
 
         self.call_from_thread(done)
